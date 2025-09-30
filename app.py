@@ -1,6 +1,3 @@
-mira me gustaria que me expliques todo el codigo porq a veces no se donde ubicarme cuando quiero cambiar algo sabes , te lo paso para q me expliques paso a paso 
-
-
 import math, re
 from flask import Flask, request, render_template_string
 import pytesseract  # ← no usamos OCR aquí, solo queda configurado si más adelante lo necesitás
