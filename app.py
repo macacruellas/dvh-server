@@ -5,7 +5,7 @@ import pytesseract  # ← no usamos OCR aquí, solo queda configurado si más ad
 # Ajustá la ruta si tu tesseract.exe está en otro lugar (esta es la que vos encontraste)
 pytesseract.pytesseract.tesseract_cmd = r"C:\Users\Julieta\AppData\Local\Programs\Tesseract-OCR\tesseract.exe"
 
-app = Flask(_name_)
+app = Flask(__name__)
 
 # ====== Límites fijos (inamovibles) ======
 LIMITS_EQD2 = {"VEJIGA":85.0,"RECTO":75.0,"SIGMOIDE":75.0,"INTESTINO":75.0}
@@ -900,7 +900,7 @@ def calcular_hdr():
         ctv_volume_total=ctv_volume_total, ctv_d90_gy=ctv_d90_gy, ctv_d90_cgy=ctv_d90_cgy,
         limits=limits_caps
     )
-if _name_ == "_main_":
+if __name__ == "__main__":
     print(">> Booting Flask on http://127.0.0.1:5000  (use_reloader=False)")
     try:
         app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False)
