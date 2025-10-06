@@ -872,7 +872,7 @@ def calcular_hdr():
         }))
     if ctv_d95_hidden and not any(getattr(r, "is_ctv_d95", False) for r in results):
         results.append(type("Row", (), {
-            "roi": "CTV (D95)", "D_ext": ctv_d95_hidden, "fx_rt": fx_rt, "d_rt": 0.0, "ab": 10.0,
+            "roi": "CTV", "D_ext": ctv_d95_hidden, "fx_rt": fx_rt, "d_rt": 0.0, "ab": 10.0,
             "eqd2_ext": (float(ctv_eqd2_hidden) if ctv_eqd2_hidden else None),
             "hdr_prev": 0.0, "used": 0.0, "limit": None, "rem": None, "N": n_hdr,
             "dmax_session": None, "flag": None, "is_ctv_d95": True,
