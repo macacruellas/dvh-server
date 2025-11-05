@@ -117,11 +117,7 @@ PAGE = """
 <body><div class="container"><div class="card">
   <h1><span style="color:#67e8f9"> <span class="badge">Cálculo dosimétrico Braquiterapia </span></h1>
 
-  {% if error %}
-    <div class="card" style="margin:12px 0; border-color: rgba(248,113,113,.6); background:rgba(248,113,113,.08)">
-      <p class="warn">⚠ {{ error }}</p>
-    </div>
-  {% endif %}
+
 
  <div class="lead">
   <p><strong>Este servidor permite subir el plan de radioterapia externa</strong> con el fin de calcular cuáles serán las dosis máximas permitidas por sesión en la braquiterapia. Una vez que se planifica la braquiterapia, también es posible ingresar los datos correspondientes para obtener la suma total de dosis en EQD2.</p>
@@ -246,7 +242,11 @@ PAGE = """
    <div class="section">
   <h3>Paso 2 — Cargar DVH Oncentra</h3>
   <p class="small">Elegí el número de sesiones y subí un archivo por sesión. El cálculo suma dosis y EQD2 automáticamente.</p>
-
+  {% if error %}
+    <div class="card" style="margin:12px 0; border-color: rgba(248,113,113,.6); background:rgba(248,113,113,.08)">
+      <p class="warn">⚠ {{ error }}</p>
+    </div>
+  {% endif %}
   <div class="row">
     <label><strong>¿Cuántos planes se realizarán?</strong>
       <select class="input" name="n_sesiones" id="n_sesiones">
@@ -509,7 +509,8 @@ def parse_oncentra_dvh_text(txt):
 
 def parse_patient_meta(txt):
     name, pid = None, None
-    m = re.search(r'(?:Patient\s*Name|Nombre\s+de\s+paciente)\s*:\s*([^\r\n]+)', txt, re.I)
+    # LÍNEA CORREGIDA:
+    m = re.search(r'(?:Patient\s*Name|Nombre\s+de\s+paciente|\bPatient\b(?!\s*ID))\s*:\s*([^\r\n]+)', txt, re.I)
     if m:
         raw_name = m.group(1).strip()
         clean = re.sub(r'\s*\([^)]*\)', '', raw_name).strip()
@@ -865,10 +866,11 @@ def calcular_hdr():
             
             if not is_same_patient:
                 msg = (
-                    f"⚠️ Error de paciente: Los archivos son de personas diferentes. "
-                    f"Paso 1 (Eclipse): '{patient_name or '—'}' / ID: '{patient_id or '—'}' — "
-                    f"Paso 2 (Oncentra, sesión {i}): '{hdr_name or '—'}' / ID: '{hdr_pid or '—'}'. "
-                    f"Verificá que subiste los archivos del mismo paciente."
+                    f"Error de Paciente: Los archivos no coinciden.\n\n"
+                    f"El paciente del plan de RT Externa (Paso 1) es diferente al del archivo de Braquiterapia (Paso 2, Sesión {i}).\n\n"
+                    f"Paciente (RT Externa): {patient_name or 'N/A'} (ID: {patient_id or 'N/A'})\n"
+                    f"Paciente (Braquiterapia): {hdr_name or 'N/A'} (ID: {hdr_pid or 'N/A'})\n\n"
+                    f"Por favor, verifique que sean del mismo paciente."
                 )
 
                 limits_caps = {
@@ -998,5 +1000,4 @@ if __name__ == "__main__":
         print(">> Flask crashed!")
         traceback.print_exc()
         raise
-    
     
