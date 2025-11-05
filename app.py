@@ -1,9 +1,5 @@
 import math, re
 from flask import Flask, request, render_template_string
-import pytesseract  # ← no usamos OCR aquí, solo queda configurado si más adelante lo necesitás
-
-# Ajustá la ruta si tu tesseract.exe está en otro lugar (esta es la que vos encontraste)
-pytesseract.pytesseract.tesseract_cmd = r"C:\Users\Julieta\AppData\Local\Programs\Tesseract-OCR\tesseract.exe"
 
 app = Flask(__name__)
 
@@ -54,7 +50,7 @@ ALIASES = {
 def _normalize_roi_token(s: str) -> str:
     return re.sub(r'^\s*\d+[_\s\-]*', '', s.strip().lower())
 
-# ====== Helpers de UI ======
+# ====== Helpers de UI (CSS y PAGE) ======
 CSS = """
 :root { --bg:#0f172a; --card:#111827; --muted:#94a3b8; --text:#e5e7eb; --acc:#22d3ee; --acc2:#38bdf8; --err:#f87171; --ok:#34d399; }
 *{box-sizing:border-box} body{margin:0;font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Arial;background:radial-gradient(1200px 800px at 20% -10%,#0b1b2b 0%,var(--bg) 45%),var(--bg);color:var(--text)}
@@ -120,12 +116,18 @@ PAGE = """
 <title> Servidor braquiterapia </title><style>{{css}}</style></head>
 <body><div class="container"><div class="card">
   <h1><span style="color:#67e8f9"> <span class="badge">Cálculo dosimétrico Braquiterapia </span></h1>
+
+  {% if error %}
+    <div class="card" style="margin:12px 0; border-color: rgba(248,113,113,.6); background:rgba(248,113,113,.08)">
+      <p class="warn">⚠ {{ error }}</p>
+    </div>
+  {% endif %}
+
  <div class="lead">
-  <p></strong> Este servidor permite subir el plan de radioterapia externa con el fin de calcular cuáles serán las dosis máximas permitidas por sesión en la braquiterapia. Una vez que se planifica la braquiterapia, también es posible ingresar los datos correspondientes para obtener la suma total de dosis en EQD2</b>.</p>
+  <p><strong>Este servidor permite subir el plan de radioterapia externa</strong> con el fin de calcular cuáles serán las dosis máximas permitidas por sesión en la braquiterapia. Una vez que se planifica la braquiterapia, también es posible ingresar los datos correspondientes para obtener la suma total de dosis en EQD2.</p>
 </div>
 
-  <!-- PASO 1 -->
- <form method="post" action="/cargar_dvh" enctype="multipart/form-data">
+  <form method="post" action="/cargar_dvh" enctype="multipart/form-data">
   <div class="grid">
      <label>Número de sesiones RT externa
        <input class="input" type="number" name="fx_rt" min="1" step="1" value="{{fx_rt}}">
@@ -246,12 +248,12 @@ PAGE = """
   <p class="small">Elegí el número de sesiones y subí un archivo por sesión. El cálculo suma dosis y EQD2 automáticamente.</p>
 
   <div class="row">
-    <label><strong>¿Cuántas sesiones HDR se realizaron?</strong>
+    <label><strong>¿Cuántos planes se realizarán?</strong>
       <select class="input" name="n_sesiones" id="n_sesiones">
         <option value="1" selected>1</option>
         <option value="2">2</option>
         <option value="3">3</option>
-      </select>
+      </select>  
     </label>
   </div>
 
@@ -309,8 +311,9 @@ PAGE = """
   })();
   </script>
 </div>
+</form> 
 
-  {% if plan_real %}
+{% if plan_real %}
   <div class="section">
     <h3>Dosis tratamiento HDR</h3>
     {% if patient_name or patient_id %}
@@ -333,26 +336,25 @@ PAGE = """
       <tbody>
         {% for r in plan_real %}
          <tr>
-            <td>
-              {{ r.roi }}
-              <span class="small">
+           <td>
+             {{ r.roi }}
+             <span class="small">
                {% if 'CTV' in (r.roi|string).upper() %}(D90){% else %}(D2cc){% endif %}
-              </span>
-            </td>
-            {% for i in range(n_hdr) %}
-              <td>{{ "%.2f"|format(r.doses[i]) }}</td>
-              <td>{{ "%.2f"|format(r.eqd2s[i]) }}</td>
-            {% endfor %}
-            <td>{{ "%.2f"|format(r.total_dose) }}</td>
-            <td>{{ "%.2f"|format(r.eqd2_hdr_total) }}</td>
-          </tr>
+             </span>
+           </td>
+           {% for i in range(n_hdr) %}
+             <td>{{ "%.2f"|format(r.doses[i]) }}</td>
+             <td>{{ "%.2f"|format(r.eqd2s[i]) }}</td>
+           {% endfor %}
+           <td>{{ "%.2f"|format(r.total_dose) }}</td>
+           <td>{{ "%.2f"|format(r.eqd2_hdr_total) }}</td>
+         </tr>
         {% endfor %}
       </tbody>
     </table>
     <p class="note">Nota: EQD2 por fracción con α/β=3 (OAR) o α/β=10 (CTV). “EQD2 TOTAL” = EQD2 EBRT + EQD2 HDR.</p>
-  </div>  {# cierra la sección Paso 2 #}
-</form>  {# <<< FALTABA cerrar el form #}
-{% endif %}  {# <<< FALTABA cerrar el if step1 #}
+  </div> 
+{% endif %}
 
   <div class= "section">
 <h3>Resumen dosimétrico del tratamiento completo (Radioterapia externa + HDR)</h3>
@@ -410,8 +412,7 @@ PAGE = """
 </table>
 
   </div>
-  {% endif %}
-</div></div></body></html>
+{% endif %} </div></div></body></html>
 """
 
 # ====== Física ======
@@ -436,11 +437,11 @@ def solve_hdr_dose_per_session(eqd2_remaining, N, ab):
 # ====== Normalización de etiquetas ES→EN (para DVH de Eclipse) ======
 import re as _re
 _norm_rules = [
-    (r'^\s*Estructura\s*:',                 'Structure:',  _re.I),
+    (r'^\s*Estructura\s*:',             'Structure:',   _re.I),
     (r'^\s*Estado\s+de\s+la\s+aprobación\s*:', 'Approval Status:', _re.I),
-    (r'^\s*Nombre\s+de\s+paciente\s*:',     'Patient Name         :', _re.I),
-    (r'^\s*ID\s+paciente\s*:',              'Patient ID           :', _re.I),
-    (r'^\s*Descripción\s*:',                'Description          :', _re.I),
+    (r'^\s*Nombre\s+de\s+paciente\s*:',     'Patient Name          :', _re.I),
+    (r'^\s*ID\s+paciente\s*:',           'Patient ID          :', _re.I),
+    (r'^\s*Descripción\s*:',            'Description          :', _re.I),
     (r'^\s*Dosis\s*\[\s*cGy\s*\]',          'Dose [cGy]', _re.I),
     (r'Dosis\s+relativa\s*\[\s*%\s*\]',      'Relative dose [%]', _re.I),
     (r'Volumen\s+de\s+estructura\s*\[\s*cm³\s*\]', 'Structure Volume [cm³]', _re.I),
@@ -582,10 +583,17 @@ def build_organs_autofill(d2map):
 def parse_oncentra_session_file(file_storage):
     """ Lee un archivo DVH de Oncentra (file_storage) y devuelve:
     - hdr_d2: dict {"VEJIGA": d2cc_Gy, "RECTO": ..., "SIGMOIDE": ..., "INTESTINO": ...}
-    - ctv_d90_gy: float | None"""
+    - ctv_d90_gy: float | None
+    - patient_name: str | None
+    - patient_id: str | None
+    """
+    
     txt = file_storage.read().decode("latin1", errors="ignore")
     tables = parse_oncentra_dvh_text(txt)
     idx = {name.lower(): name for name in tables.keys()}
+
+    # Extraer meta (reutilizamos tu parser genérico)
+    patient_name, patient_id = parse_patient_meta(txt)
 
     def find_match(target):
         for low, orig in idx.items():
@@ -608,11 +616,12 @@ def parse_oncentra_session_file(file_storage):
         if d90 is not None:
             ctv_d90_gy = float(d90)
 
-    return hdr_d2, ctv_d90_gy
+    return hdr_d2, ctv_d90_gy, patient_name,patient_id
 
 # ====== Rutas ======
 @app.route("/", methods=["GET"])
 def home():
+    # El render final fue corregido para evitar el TemplateSyntaxError
     return render_template_string(
         PAGE, css=CSS, fx_rt=25, n_hdr=3, step1=False,
         limits=LIMITS_EQD2,
@@ -663,7 +672,7 @@ def cargar_dvh():
 
         for organ in ("VEJIGA", "RECTO", "SIGMOIDE", "INTESTINO"):
             nm = find_match(organ if organ != "INTESTINO" else "INTESTINO")
-            nm = nm or find_match("SIGMOIDE") if organ=="INTESTINO" else nm  # fallback suave
+            nm = nm or find_match("SIGMOIDE") if organ=="INTESTINO" else nm   # fallback suave
             d2 = dose_at_volume_cc(tables.get(nm, []), 2.0) if nm else None
             d2_autofill[organ if organ!="INTESTINO" else "INTESTINO"] = round(d2, 2) if d2 is not None else None
 
@@ -705,93 +714,197 @@ def cargar_dvh():
             limit=None, rem=None, N=n_hdr, dmax_session=None, flag=None, is_ctv_d95=True
         ))
 
-    order_display = ["CTV", "Recto", "Vejiga", "Sigmoide", "Intestino"]
-    results.sort(key=lambda r: order_display.index(r.roi) if getattr(r, "roi", None) in order_display else 999)
+    # poner CTV primero, luego Recto, Vejiga, Sigmoide, Intestino
+    order_map = {"CTV": 0, "Recto": 1, "Vejiga": 2, "Sigmoide": 3, "Intestino": 4}
+    results.sort(key=lambda r: order_map.get(getattr(r, "roi", ""), 999))
+
 
     return render_template_string(
         PAGE, css=CSS, fx_rt=fx_rt, n_hdr=n_hdr, step1=True, results=results,
         patient_name=patient_name, patient_id=patient_id, limits=user_limits,
         ctv_volume_total=None, ctv_d90_gy=None, ctv_d90_cgy=None
     )
+
+# --- FUNCIÓN _norm MOVIDA FUERA DE LAS RUTAS ---
+def _norm(s):
+    return (s or "").strip().upper()
+
 @app.route("/calcular_hdr", methods=["POST"])
 def calcular_hdr():
     # ---------- 0) Parámetros base ----------
     fx_rt = int(fnum(request.form.get("fx_rt"), 25))
     n_hdr = int(fnum(request.form.get("n_hdr"), 3))
 
-    # ---------- 1) Recuperar EBRT del Paso 1 ----------
+    # ---------- 1) Recuperar y Inicializar variables para prevenir errores (UnboundLocalError/NameError) ----------
+    
+    # 1.a. Variables del paciente (vienen de campos ocultos)
+    patient_name = request.form.get("patient_name") or None
+    patient_id = request.form.get("patient_id") or None
+    
+    # 1.b. Inicializar límites y lista EBRT
+    limits_map = { 
+        "Vejiga": LIMITS_EQD2["VEJIGA"],
+        "Recto": LIMITS_EQD2["RECTO"],
+        "Sigmoide": LIMITS_EQD2["SIGMOIDE"],
+        "Intestino": LIMITS_EQD2["INTESTINO"], 
+    }
     ebrt = []
+    
+    # Variables ocultas de CTV
+    ctv_d95_hidden  = request.form.get("EBRT_CTV_D95")
+    ctv_eqd2_hidden = request.form.get("EBRT_CTV_EQD2")
+    
+    # 1.c. Recuperar EBRT del Paso 1 (campos ocultos)
     for i in range(4):
         roi = request.form.get(f"EBRT_{i}_roi")
         if not roi:
             continue
         limit_val = request.form.get(f"EBRT_{i}_limit")
-        ebrt.append({
-            "roi":   roi,  # "Vejiga"/"Recto"/"Sigmoide"/"Intestino"
-            "eqd2":  fnum(request.form.get(f"EBRT_{i}_eqd2")),
+        
+        item = {
+            "roi": roi, 
+            "eqd2": fnum(request.form.get(f"EBRT_{i}_eqd2")),
             "limit": (fnum(limit_val) if limit_val is not None and limit_val != "" else None),
-            "dext":  request.form.get(f"EBRT_{i}_dext") or None,
-        })
-
-    # CTV (D95) de EBRT si vino oculto
-    ctv_d95_hidden  = request.form.get("EBRT_CTV_D95")
-    ctv_eqd2_hidden = request.form.get("EBRT_CTV_EQD2")
-
-    # Mapa de límites (OARs) — base y overrides
-    limits_map = {
-        "Vejiga":    LIMITS_EQD2["VEJIGA"],
-        "Recto":     LIMITS_EQD2["RECTO"],
-        "Sigmoide":  LIMITS_EQD2["SIGMOIDE"],
-        "Intestino": LIMITS_EQD2["INTESTINO"],
-    }
-    for item in ebrt:
-        roi_disp = item.get("roi")
+            "dext": request.form.get(f"EBRT_{i}_dext") or None,
+        }
+        ebrt.append(item)
+        
+        # Actualizar limits_map con el límite personalizado
         lim = item.get("limit")
-        if roi_disp in limits_map and lim is not None:
+        if roi in limits_map and lim is not None:
             try:
-                limits_map[roi_disp] = float(lim)
+                limits_map[roi] = float(lim)
             except:
                 pass
 
-    patient_name = request.form.get("patient_name") or None
-    patient_id   = request.form.get("patient_id") or None
+    # 1.d. Generar la previsualización (results_preview)
+    # Esto es necesario para renderizar la tabla EBRT en caso de ERROR.
+    results_preview = []
+    Row = lambda **k: type("Row", (), k)
+    for item in ebrt:
+        roi   = item["roi"]
+        eqd2  = item["eqd2"]
+        limit = item["limit"]
+        dext  = item["dext"]
+        if limit is not None:
+            rem  = max(0.0, limit - eqd2)
+            dmax = solve_hdr_dose_per_session(rem, n_hdr, 3.0)
+            flag = "ok" if rem > 0 else "warn"
+        else:
+            rem = dmax = flag = None
+        results_preview.append(Row(
+            roi=roi, D_ext=dext, fx_rt=fx_rt, d_rt=0.0, ab=3.0,
+            eqd2_ext=eqd2, hdr_prev=0.0, used=eqd2, limit=limit,
+            rem=rem, N=n_hdr, dmax_session=dmax, flag=flag,
+            is_ctv_d95=False,
+        ))
+    
+    # Agregar CTV a results_preview si existe
+    if ctv_d95_hidden:
+        results_preview.append(Row(
+            roi="CTV", D_ext=ctv_d95_hidden, fx_rt=fx_rt, d_rt=0.0, ab=10.0,
+            eqd2_ext=(float(ctv_eqd2_hidden) if ctv_eqd2_hidden else None),
+            hdr_prev=0.0, used=0.0, limit=None, rem=None, N=n_hdr,
+            dmax_session=None, flag=None, is_ctv_d95=True
+        ))
+    
+    # Inicializar variables de salida para evitar UnboundLocalError
+    plan = []
+    plan_summary = []
+    results = results_preview # Usamos preview como base
 
-    # ---------- 2) Leer N archivos HDR en este mismo POST (sin session) ----------
+    # --------------------------------------------------------------------------------------
+    
+    # 2. Leer N archivos HDR en este mismo POST (sin session)
     try:
         n_ses = int(request.form.get("n_sesiones", "1"))
         n_ses = max(1, min(3, n_ses))
     except:
         n_ses = 1
-
-    hdr_d2_files = []   # lista por archivo: dict D2cc por OAR
-    ctv_d90_files = []  # lista por archivo: D90 CTV (Gy) o None
-
+        
+    hdr_d2_files = [] 
+    ctv_d90_files = []
+    
+    # 2.a. Bucle de archivos HDR (¡FLUJO Y VALIDACIÓN CORREGIDOS!)
     for i in range(1, n_ses + 1):
         f = request.files.get(f"hdrfile_{i}")
+        
+        # 2.a.i. Validación de existencia de archivo
         if not f or not f.filename.strip():
-            return f"Falta archivo de la sesión {i}.", 400
-        hdr_d2, ctv_d90_gy = parse_oncentra_session_file(f)
+            msg = f"Error de archivo: Falta cargar el archivo de la sesión {i}."
+            
+            limits_caps = {
+                "VEJIGA": limits_map.get("Vejiga", LIMITS_EQD2["VEJIGA"]),
+                "RECTO": limits_map.get("Recto", LIMITS_EQD2["RECTO"]),
+                "SIGMOIDE": limits_map.get("Sigmoide", LIMITS_EQD2["SIGMOIDE"]),
+                "INTESTINO": limits_map.get("Intestino", LIMITS_EQD2["INTESTINO"]),
+            }
+            
+            return render_template_string(
+                PAGE, css=CSS, fx_rt=fx_rt, n_hdr=n_hdr, step1=True,
+                results=results_preview, plan_real=plan, plan_summary=plan_summary,
+                patient_name=patient_name, patient_id=patient_id,
+                limits=limits_caps, error=msg
+            )
+            
+        # 2.a.ii. Procesar el archivo
+        hdr_d2, ctv_d90_gy, hdr_name, hdr_pid = parse_oncentra_session_file(f)
+
+        # 2.a.iii. Validación de paciente (CRUCIAL)
+        if (patient_name or patient_id) and (hdr_name or hdr_pid):
+            
+            norm_patient_id = _norm(patient_id)
+            norm_hdr_pid = _norm(hdr_pid)
+
+            is_same_patient = True
+            if norm_patient_id and norm_hdr_pid:
+                if norm_patient_id != norm_hdr_pid:
+                    is_same_patient = False
+            elif _norm(patient_name) != _norm(hdr_name):
+                is_same_patient = False
+            
+            if not is_same_patient:
+                msg = (
+                    f"⚠️ Error de paciente: Los archivos son de personas diferentes. "
+                    f"Paso 1 (Eclipse): '{patient_name or '—'}' / ID: '{patient_id or '—'}' — "
+                    f"Paso 2 (Oncentra, sesión {i}): '{hdr_name or '—'}' / ID: '{hdr_pid or '—'}'. "
+                    f"Verificá que subiste los archivos del mismo paciente."
+                )
+
+                limits_caps = {
+                    "VEJIGA": limits_map.get("Vejiga", LIMITS_EQD2["VEJIGA"]),
+                    "RECTO": limits_map.get("Recto", LIMITS_EQD2["RECTO"]),
+                    "SIGMOIDE": limits_map.get("Sigmoide", LIMITS_EQD2["SIGMOIDE"]),
+                    "INTESTINO": limits_map.get("Intestino", LIMITS_EQD2["INTESTINO"]),
+                }
+                
+                return render_template_string(
+                    PAGE, css=CSS, fx_rt=fx_rt, n_hdr=n_hdr, step1=True,
+                    results=results_preview, plan_real=plan, plan_summary=plan_summary,
+                    patient_name=patient_name, patient_id=patient_id,
+                    limits=limits_caps, error=msg
+                )
+
+        # 2.a.iv. Si todo es correcto, guardamos la data
         hdr_d2_files.append(hdr_d2)
         ctv_d90_files.append(ctv_d90_gy)
+        
+    # El bucle de archivos HDR termina aquí
 
-    # La cantidad real de columnas que mostrará la tabla = n_hdr del Paso 1
-    n_hdr = int(fnum(request.form.get("n_hdr"), n_hdr))
-
-    # ---------- 2.b) Regla de mapeo archivos -> columnas ----------
-    # 1 archivo -> [A, A, A, ...]
-    # 2 archivos -> [A, B, B, ...]
-    # 3 archivos -> [A, B, C, C, ...] si hubiera más columnas
+    # --------------------------------------------------------------------------------------
+    # ---------- CÁLCULOS FINALES (Solo se ejecutan si NO hubo return en el bucle) ----------
+    # --------------------------------------------------------------------------------------
+    
+    # 2.b) Regla de mapeo archivos -> columnas
     def pick_file_index(col_idx: int, n_sesiones: int) -> int:
         if n_sesiones <= 1:
             return 0
         if n_sesiones == 2:
             return 0 if col_idx == 0 else 1
-        # n_sesiones >= 3
         return col_idx if col_idx < n_sesiones else n_sesiones - 1
 
-    # ---------- 3) Construir Plan HDR por fracción (una columna por sesión mostrada) ----------
-    plan = []
-    Row = lambda **k: type("Row", (), k)
+    # 3) Construir Plan HDR por fracción
+    plan = [] # Re-inicializar
 
     # CTV por columna (α/β = 10)
     any_ctv = any(d is not None for d in ctv_d90_files)
@@ -836,8 +949,8 @@ def calcular_hdr():
             eqd2_total=eqd2_total, limit=limit, is_ctv=False
         ))
 
-    # ---------- 3.c) Resumen dosimétrico ----------
-    plan_summary = []
+    # 3.c) Resumen dosimétrico
+    plan_summary = [] # Re-inicializar
     for r in plan:
         is_ctv = getattr(r, "is_ctv", False)
         roi_name = "CTV" if is_ctv else r.roi
@@ -851,34 +964,10 @@ def calcular_hdr():
     order_display = ["CTV (D90)", "Recto", "Vejiga", "Sigmoide", "Intestino"]
     plan_summary.sort(key=lambda x: order_display.index(x["roi"]) if x["roi"] in order_display else 999)
 
-    # ---------- 4) Reconstruir Tabla 1 (arriba) con los EBRT que vinieron ----------
-    results = []
-    for item in ebrt:
-        roi   = item["roi"]
-        eqd2  = item["eqd2"]
-        limit = item["limit"]
-        dext  = item["dext"]
-        if limit is not None:
-            rem  = max(0.0, limit - eqd2)
-            dmax = solve_hdr_dose_per_session(rem, n_hdr, 3.0)
-            flag = "ok" if rem > 0 else "warn"
-        else:
-            rem = dmax = flag = None
-        results.append(type("Row", (), {
-            "roi": roi, "D_ext": dext, "fx_rt": fx_rt, "d_rt": 0.0, "ab": 3.0,
-            "eqd2_ext": eqd2, "hdr_prev": 0.0, "used": eqd2, "limit": limit,
-            "rem": rem, "N": n_hdr, "dmax_session": dmax, "flag": flag,
-            "is_ctv_d95": False,
-        }))
-    if ctv_d95_hidden and not any(getattr(r, "is_ctv_d95", False) for r in results):
-        results.append(type("Row", (), {
-            "roi": "CTV", "D_ext": ctv_d95_hidden, "fx_rt": fx_rt, "d_rt": 0.0, "ab": 10.0,
-            "eqd2_ext": (float(ctv_eqd2_hidden) if ctv_eqd2_hidden else None),
-            "hdr_prev": 0.0, "used": 0.0, "limit": None, "rem": None, "N": n_hdr,
-            "dmax_session": None, "flag": None, "is_ctv_d95": True,
-        }))
+    # 4) Reconstruir Tabla 1 (results)
+    # results ya está inicializado con results_preview, lo usamos para el render final
 
-    # ---------- 5) Render ----------
+    # 5) Render final
     ctv_volume_total = None
     ctv_d90_gy = None
     ctv_d90_cgy = None
@@ -890,7 +979,7 @@ def calcular_hdr():
         "INTESTINO": limits_map.get("Intestino",LIMITS_EQD2["INTESTINO"]),
     }
 
-    order_display2 = ["CTV (D95)", "Recto", "Vejiga", "Sigmoide", "Intestino"]
+    order_display2 = ["CTV", "Recto", "Vejiga", "Sigmoide", "Intestino"]
     results.sort(key=lambda r: order_display2.index(r.roi) if getattr(r, "roi", None) in order_display2 else 999)
 
     return render_template_string(
@@ -909,3 +998,5 @@ if __name__ == "__main__":
         print(">> Flask crashed!")
         traceback.print_exc()
         raise
+    
+    
