@@ -1,5 +1,14 @@
-import math, re
-from flask import Flask, request, render_template_string
+import math, re, io, json, os, tempfile
+from flask import Flask, request, render_template_string, send_file
+from openpyxl import load_workbook
+from openpyxl.cell.cell import MergedCell
+from openpyxl.styles import Alignment
+from openpyxl.styles import Font
+import win32com.client as win32
+import pythoncom
+from datetime import datetime 
+
+
 
 app = Flask(__name__)
 
@@ -107,8 +116,32 @@ h1 { font-size: calc(24px + var(--inc)); }
 .btn { font-size: calc(14px + var(--inc)); }
 .patient-info { font-size: calc(16px + var(--inc)); }
 .small { font-size: calc(12px + var(--inc)); }
+/* --- OPCIÓN B: ANCHO BALANCEADO (RECOMENDADO) --- */
+.table-fixed-layout,
+.table-summary {
+    table-layout: fixed;
+    width: 100%;
+}
 
+.table-fixed-layout th:first-child,
+.table-fixed-layout td:first-child,
+.table-summary th:first-child,
+.table-summary td:first-child {
+    width: 34%; /* Más espacio para la columna "Órgano" */
+}
+/* ... (El resto de tu código CSS termina aquí, por ejemplo, con .small { font-size: ... } ) ... */
 
+/* --- AÑADIR AL FINAL DEL BLOQUE CSS --- */
+/* Aumenta el grosor del borde de las celdas de la tabla de resumen */
+.table-summary th,
+.table-summary td {
+    border: 2px solid rgba(255,255,255,.35); /* Borde más grueso y un poco más claro */
+}
+
+/* Aumenta el grosor del borde exterior de la tabla de resumen */
+.table-summary {
+    border: 3px solid rgba(255,255,255,.5); /* Borde exterior más visible */
+}
 """
 
 PAGE = """
@@ -116,14 +149,27 @@ PAGE = """
 <title> Servidor braquiterapia </title><style>{{css}}</style></head>
 <body><div class="container"><div class="card">
   <h1><span style="color:#67e8f9"> <span class="badge">Cálculo dosimétrico Braquiterapia </span></h1>
-
+{% if error %}
+    <div class="card" style="margin:12px 0; border-color: rgba(248,113,113,.6); background:rgba(248,113,113,.08)">
+      <p class="warn">⚠ {{ error }}</p>
+    </div>
+  {% endif %}
 
 
  <div class="lead">
   <p><strong>Este servidor permite subir el plan de radioterapia externa</strong> con el fin de calcular cuáles serán las dosis máximas permitidas por sesión en la braquiterapia. Una vez que se planifica la braquiterapia, también es posible ingresar los datos correspondientes para obtener la suma total de dosis en EQD2.</p>
 </div>
+  <!-- ===== Selector de origen EBRT ===== -->
+<div class="section card" style="margin-bottom:12px;">
+  <label style="display:flex; gap:.5rem; align-items:center;">
+    <input type="checkbox" id="chk_rtx_local" name="chk_rtx_local">
+    ¿El paciente se realizó radioterapia externa en este centro?
+  </label>
+  <p class="small">Marcado = usamos Paso 1 con export de Eclipse. Desmarcado = carga manual editable.</p>
+</div>
 
   <form method="post" action="/cargar_dvh" enctype="multipart/form-data">
+  <input type="hidden" id="manual_mode" name="manual_mode" value="0">
   <div class="grid">
      <label>Número de sesiones RT externa
        <input class="input" type="number" name="fx_rt" min="1" step="1" value="{{fx_rt}}">
@@ -137,7 +183,7 @@ PAGE = """
   <div class="section">
     <h3>Límites por órgano </h3>
     <p class="small"> Los límites por órgano corresponden a las dosis máximas recomendadas en EQD2 para cada estructura de riesgo. Estos valores pueden ser modificados; en ese caso, es necesario volver a cargar los archivos para que los cálculos se actualicen correctamente.</p>
-    <table class="table">
+    <table class="table table-fixed-layout">
       <thead>
         <tr><th>Órgano</th><th>Límite EQD2 (Gy)</th></tr>
       </thead>
@@ -150,9 +196,12 @@ PAGE = """
     </table>
   </div>
 
-  <div class="section">
+  <div id="bloque-paso1" class="section" style="display:none;">
     <h3>Paso 1 — Cargar DVH Eclipse</h3>
-    <p class="small"> Para extraer el DVH desde Eclipse debe abrirse el histograma de dosis, seleccionar los órganos de riesgo junto con el CTV, configurar la visualización en <i>volumen absoluto</i> y <i>dosis absoluta</i>, y luego utilizar la opción de menú desplegable (<i>clic derecho → Exportar histograma</i>) para generar el archivo.</p>
+    <p class="small"> Para exportar los datos desde Eclipse, abrir el histograma de dosis en la vista del plan haciendo clic derecho y seleccionando Show → Dose Volume Histogram View. Luego, seleccionar los histogramas correspondientes a Vejiga, Intestino, Sigma, Recto y CTV.
+Una vez visibles, hacer nuevamente clic derecho sobre el histograma y configurar las unidades en Absolute Dose y Absolute Volume.
+A continuación, ingresar a DVH Options → DVH Export Options, establecer un Step size de 10 cGy y confirmar con OK.
+Por último, hacer clic derecho otra vez en el histograma y seleccionar Export DVH in tabular format, guardando el archivo generado (.txt) en la carpeta del paciente.
     <div class="row" style="margin-top:8px">
       <label>Archivo DVH (texto .txt de Eclipse)
         <input class="input" type="file" name="dvhfile" accept=".txt,.dvh,.csv,.log,.dat,.*">
@@ -162,6 +211,80 @@ PAGE = """
       <button class="btn btn-primary" type="submit">Cargar</button>
     </div>
   </div>
+  <!-- ===== Carga manual cuando NO hay EBRT local ===== -->
+<div id="bloque-manual" class="section" style="display:none;">
+  <h3>Ingreso manual de RT externa (si el paciente no se trató en este centro)</h3>
+
+  <div class="grid">
+    <label>Nombre del paciente
+      <input class="input" type="text" name="patient_name_manual" placeholder="Apellido, Nombre">
+    </label>
+    <label>ID del paciente
+      <input class="input" type="text" name="patient_id_manual" placeholder="ID / HC / DNI">
+    </label>
+  </div>
+
+  <p class="small">Ingrese D2cc (Gy) para OAR y, si lo tienen, D95 (Gy) para CTV. El sistema calcula EQD2 con α/β=3 (OAR) y α/β=10 (CTV) usando las fracciones de RT externa.</p>
+
+  <table class="table table-fixed-layout">
+    <thead>
+      <tr>
+        <th>Órgano</th>
+        <th>Valor (Gy)</th>
+        <th>Tipo</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Vejiga</td>
+        <td><input class="input" type="number" step="0.01" name="manual_VEJIGA" placeholder="D2cc Vejiga (Gy)"></td>
+        <td class="small">D2cc</td>
+      </tr>
+      <tr>
+        <td>Recto</td>
+        <td><input class="input" type="number" step="0.01" name="manual_RECTO" placeholder="D2cc Recto (Gy)"></td>
+        <td class="small">D2cc</td>
+      </tr>
+      <tr>
+        <td>Sigmoide</td>
+        <td><input class="input" type="number" step="0.01" name="manual_SIGMOIDE" placeholder="D2cc Sigmoide (Gy)"></td>
+        <td class="small">D2cc</td>
+      </tr>
+      <tr>
+        <td>Intestino</td>
+        <td><input class="input" type="number" step="0.01" name="manual_INTESTINO" placeholder="D2cc Intestino (Gy)"></td>
+        <td class="small">D2cc</td>
+      </tr>
+      <tr>
+        <td>CTV</td>
+        <td><input class="input" type="number" step="0.01" name="manual_CTV_D95" placeholder="D95 CTV (Gy)"></td>
+        <td class="small">D95</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <p class="small">Si es braquiterapia exclusiva, dejá los campos en blanco/cero y continuá al Paso 2.</p>
+</div>
+<script>
+(function(){
+  const chk = document.getElementById('chk_rtx_local');
+  const paso1 = document.getElementById('bloque-paso1');
+  const manual = document.getElementById('bloque-manual');
+  const manualMode = document.getElementById('manual_mode');
+
+  function updateUI(){
+    const onSite = chk.checked;
+    paso1.style.display = onSite ? 'block' : 'none';
+    manual.style.display = onSite ? 'none' : 'block';
+    manualMode.value = onSite ? '0' : '1';
+  }
+  chk.addEventListener('change', updateUI);
+  // Estado inicial: desmarcado (muestra Manual)
+  chk.checked = false;
+  updateUI();
+})();
+</script>
+
  </form>
 
   {% if step1 %}
@@ -171,7 +294,7 @@ PAGE = """
       <p class="patient-info"><b>Paciente:</b> {{ patient_name or "—" }} &nbsp;&nbsp; <b>ID:</b> {{ patient_id or "—" }}</p>
     {% endif %}
 
-    <table class="table">
+    <table class="table table-fixed-layout">
   <thead>
     <tr>
       <th>Órgano</th>
@@ -241,12 +364,9 @@ PAGE = """
 
    <div class="section">
   <h3>Paso 2 — Cargar DVH Oncentra</h3>
-  <p class="small">Elegí el número de sesiones y subí un archivo por sesión. El cálculo suma dosis y EQD2 automáticamente.</p>
-  {% if error %}
-    <div class="card" style="margin:12px 0; border-color: rgba(248,113,113,.6); background:rgba(248,113,113,.08)">
-      <p class="warn">⚠ {{ error }}</p>
-    </div>
-  {% endif %}
+  <p class="small">En Oncentra, posicionarse sobre el histograma y abrir la ventana de propiedades y en DVH, asegurarse de que las unidades estén configuradas en Dose Absolute y Volume Absolute.
+Luego, posicionarse sobre el histograma, hacer clic derecho y seleccionar la opción Dump to file, guardando el archivo generado en la carpeta del paciente correspondiente.
+Por último, elegir el número de planes y subir un archivo por sesión. El cálculo sumará automáticamente las dosis y los valores de EQD2.</p>
   <div class="row">
     <label><strong>¿Cuántos planes se realizarán?</strong>
       <select class="input" name="n_sesiones" id="n_sesiones">
@@ -258,7 +378,7 @@ PAGE = """
   </div>
 
   <div id="sesion-1" class="card" style="margin-top:12px">
-    <h4>Sesión 1</h4>
+    <h4>Plan 1</h4>
     <div class="grid">
       <label>Archivo Oncentra (txt)
         <input class="input" type="file" name="hdrfile_1" accept=".txt,.dvh,.csv,.log,.dat,.*" required>
@@ -267,7 +387,7 @@ PAGE = """
   </div>
 
   <div id="sesion-2" class="card" style="margin-top:12px; display:none">
-    <h4>Sesión 2</h4>
+    <h4>Plan 2</h4>
     <div class="grid">
       <label>Archivo Oncentra (txt)
         <input class="input" type="file" name="hdrfile_2" accept=".txt,.dvh,.csv,.log,.dat,.*">
@@ -276,7 +396,7 @@ PAGE = """
   </div>
 
   <div id="sesion-3" class="card" style="margin-top:12px; display:none">
-    <h4>Sesión 3</h4>
+    <h4>Plan 3</h4>
     <div class="grid">
       <label>Archivo Oncentra (txt)
         <input class="input" type="file" name="hdrfile_3" accept=".txt,.dvh,.csv,.log,.dat,.*">
@@ -356,6 +476,7 @@ PAGE = """
   </div> 
 {% endif %}
 
+{% if plan_real %}
   <div class= "section">
 <h3>Resumen dosimétrico del tratamiento completo (Radioterapia externa + HDR)</h3>
 {% if patient_name or patient_id %}
@@ -412,7 +533,25 @@ PAGE = """
 </table>
 
   </div>
+{% endif %}
 {% endif %} </div></div></body></html>
+{% if plan_real %}
+  <div class="section" style="margin-top:16px">
+    <form method="post" action="/export_carton">
+      <input type="hidden" name="payload" value='{{ export_data|tojson }}'>
+      <button class="btn btn-primary" type="submit">Exportar cartón dosimétrico </button>
+    </form>
+    <p class="small">Se exporta con el formato de “Cartón dosimétrico.xlsx” y los valores de la tabla de arriba.</p>
+  </div>
+{% endif %}
+    <!-- 👇 NUEVO: botón para informe final editable -->
+    <form method="post" action="/export_informe" style="margin-top:10px">
+      <input type="hidden" name="payload" value='{{ export_data|tojson }}'>
+      <button class="btn btn-primary" type="submit">Exportar informe final (editable)</button>
+    </form>
+    <p class="small">Genera un informe final en Excel a partir de la plantilla “Plantilla informe medico.xlsx”.</p>
+  </div>
+{% endif %}
 """
 
 # ====== Física ======
@@ -633,6 +772,19 @@ def home():
 def cargar_dvh():
     fx_rt = int(fnum(request.form.get("fx_rt"), 25))
     n_hdr = int(fnum(request.form.get("n_hdr"), 3))
+    # ===== NUEVO: detectar modo manual y tomar datos =====
+    manual_mode = (request.form.get("manual_mode") == "1")
+
+    patient_name_manual = (request.form.get("patient_name_manual") or "").strip() or None
+    patient_id_manual   = (request.form.get("patient_id_manual") or "").strip() or None
+
+    manual_vals = {
+      "VEJIGA":   fnum(request.form.get("manual_VEJIGA"),   None),
+      "RECTO":    fnum(request.form.get("manual_RECTO"),    None),
+      "SIGMOIDE": fnum(request.form.get("manual_SIGMOIDE"), None),
+      "INTESTINO":fnum(request.form.get("manual_INTESTINO"),None),
+    }
+    manual_ctv_d95 = fnum(request.form.get("manual_CTV_D95"), None)
 
     def _clamp(x, lo=0.0, hi=500.0):
         try:
@@ -656,8 +808,19 @@ def cargar_dvh():
     ctv_d95_gy = None
     tables = {}
 
-    file = request.files.get("dvhfile")
-    if file and file.filename:
+    if manual_mode:
+       # ===== MODO MANUAL =====
+      patient_name = patient_name_manual
+      patient_id   = patient_id_manual
+      for organ in ("VEJIGA","RECTO","SIGMOIDE","INTESTINO"):
+          val = manual_vals.get(organ)
+          d2_autofill[organ] = (round(val, 2) if (val is not None and val > 0) else None)
+      if manual_ctv_d95 is not None and manual_ctv_d95 > 0:
+        ctv_d95_gy = round(manual_ctv_d95, 2)
+    else:
+    # ===== MODO ARCHIVO (Paso 1 estándar) =====
+      file = request.files.get("dvhfile")
+      if file and file.filename:
         raw = file.read().decode("latin1", errors="ignore")
         txt = normalize_labels(raw)
         patient_name, patient_id = parse_patient_meta(txt)
@@ -682,6 +845,7 @@ def cargar_dvh():
             d95, Vtot, Vtarget = dose_at_percent_volume(tables.get(nm_ctv, []), 95.0)
             if d95 is not None:
                 ctv_d95_gy = round(d95, 2)
+
 
     results = []
     Row = lambda **k: type("Row", (), k)
@@ -718,8 +882,7 @@ def cargar_dvh():
     # poner CTV primero, luego Recto, Vejiga, Sigmoide, Intestino
     order_map = {"CTV": 0, "Recto": 1, "Vejiga": 2, "Sigmoide": 3, "Intestino": 4}
     results.sort(key=lambda r: order_map.get(getattr(r, "roi", ""), 999))
-
-
+    
     return render_template_string(
         PAGE, css=CSS, fx_rt=fx_rt, n_hdr=n_hdr, step1=True, results=results,
         patient_name=patient_name, patient_id=patient_id, limits=user_limits,
@@ -969,7 +1132,7 @@ def calcular_hdr():
     # 4) Reconstruir Tabla 1 (results)
     # results ya está inicializado con results_preview, lo usamos para el render final
 
-    # 5) Render final
+      # 5) Render final
     ctv_volume_total = None
     ctv_d90_gy = None
     ctv_d90_cgy = None
@@ -982,15 +1145,397 @@ def calcular_hdr():
     }
 
     order_display2 = ["CTV", "Recto", "Vejiga", "Sigmoide", "Intestino"]
-    results.sort(key=lambda r: order_display2.index(r.roi) if getattr(r, "roi", None) in order_display2 else 999)
+    results.sort(
+        key=lambda r: order_display2.index(r.roi)
+        if getattr(r, "roi", None) in order_display2 else 999
+    )
+
+    # --- Helper para floats seguros ---
+    def _sf(x):
+        try:
+            if x is None:
+                return None
+            return float(x)
+        except Exception:
+            return None
+
+    # --- Datos para el cartón dosimétrico (TABLA 3 + RT externa) ---
+    export_data = {
+        "patient_name": patient_name,
+        "patient_id": patient_id,
+        "fx_rt": fx_rt,
+        "n_hdr": n_hdr,
+        # Resumen dosimétrico (EQD2 EBRT / HDR / TOTAL)
+        "summary": [
+            {
+                "roi": item["roi"],
+                "eqd2_ebrt": _sf(item["eqd2_ebrt"]),
+                "eqd2_hdr":  _sf(item["eqd2_hdr"]),
+                "eqd2_total": _sf(item["eqd2_total"]),
+            }
+            for item in plan_summary
+        ],
+        # Datos de RT externa de la TABLA 1 (RT Externa (Gy))
+        "ebrt": [
+            {
+                "roi": ("CTV" if getattr(r, "is_ctv_d95", False) else getattr(r, "roi", "")),
+                "D_ext": _sf(getattr(r, "D_ext", None)),      # RT Externa (Gy) de la Tabla 1
+                "eqd2_ext": _sf(getattr(r, "eqd2_ext", None))
+            }
+            for r in results
+        ],
+        "hdr_fractions": [
+            {
+                "roi": getattr(r, "roi", ""),
+                "eqd2s": [ _sf(x) for x in getattr(r, "eqd2s", []) ],
+            }
+            for r in plan
+        ],
+    }
 
     return render_template_string(
         PAGE, css=CSS, fx_rt=fx_rt, n_hdr=n_hdr, step1=True,
         results=results, plan_real=plan, plan_summary=plan_summary,
         patient_name=patient_name, patient_id=patient_id,
-        ctv_volume_total=ctv_volume_total, ctv_d90_gy=ctv_d90_gy, ctv_d90_cgy=ctv_d90_cgy,
-        limits=limits_caps
+        ctv_volume_total=ctv_volume_total,
+        ctv_d90_gy=ctv_d90_gy, ctv_d90_cgy=ctv_d90_cgy,
+        limits=limits_caps,
+        export_data=export_data,
+   )
+
+from openpyxl.cell.cell import MergedCell  # ponelo arriba del archivo si querés
+
+@app.route("/export_carton", methods=["POST"])
+def export_carton():
+    # 1) Recuperar data desde el hidden
+    payload = request.form.get("payload", "")
+    if not payload:
+        return "Sin datos para exportar", 400
+
+    try:
+        data = json.loads(payload)
+    except Exception:
+        return "Payload inválido", 400
+
+    # --- Datos que vienen del render (export_data) ---
+    patient_name = data.get("patient_name") or ""
+    patient_id   = data.get("patient_id") or ""
+    fx_rt        = int(data.get("fx_rt") or 0)
+    n_hdr        = int(data.get("n_hdr") or 0)
+    summary      = data.get("summary") or []
+    ebrt         = data.get("ebrt") or []
+    hdr_fractions = data.get("hdr_fractions") or []
+
+
+    # === HELPER PARA REDONDEAR (2 decimales) ===
+    def r2(x):
+        """Redondea a 2 decimales, o devuelve None si no aplica."""
+        try:
+            if x is None:
+                return None
+            return round(float(x), 2)
+        except Exception:
+            return x
+
+    # === MAPA PARA RT EXTERNA (TABLA 1) ===
+    # Cada entrada: roi -> {"roi": ..., "D_ext": ..., "eqd2_ext": ...}
+    ebrt_map = {}
+    for row in ebrt:
+        roi = (row.get("roi") or "").upper()
+        if not roi:
+            continue
+        ebrt_map[roi] = row
+
+    # 2) Abrir plantilla EXACTA del cartón (con logos y todo)
+    template_path = os.path.join(os.path.dirname(__file__), "Cartón dosimétrico.xlsx")
+    if not os.path.exists(template_path):
+        return f"No se encontró la plantilla en {template_path}", 500
+
+    wb = load_workbook(template_path)
+    # Ajustá el nombre de la hoja según tu archivo
+    ws = wb["Hoja1 (2)"] if "Hoja1 (2)" in wb.sheetnames else wb.active
+
+    # --- Armar Apellido / Nombre desde "Apellido, Nombre" ---
+    full_name = patient_name.strip()
+    apellido = ""
+    nombre = ""
+    if "," in full_name:
+        parts = [p.strip() for p in full_name.split(",", 1)]
+        apellido, nombre = parts[0], parts[1]
+    elif full_name:
+        parts = full_name.split()
+        apellido = parts[0]
+        nombre = " ".join(parts[1:])
+
+    # Apellido / Nombre: mayúsculas y alineados a la izquierda (pegaditos)
+    ws["C8"] = (apellido or full_name).upper()
+    ws["C9"] = (nombre or "").upper()
+
+    left_align = Alignment(horizontal="left")
+    ws["C8"].alignment = left_align
+    ws["C9"].alignment = left_align
+    center_align = Alignment(horizontal="center")
+
+    # ID en sector "Código de barras", manejando celdas combinadas
+    cell = ws["H3"]
+    if isinstance(cell, MergedCell):
+        for merged_range in ws.merged_cells.ranges:
+            if cell.coordinate in merged_range:
+                top_left = ws.cell(row=merged_range.min_row, column=merged_range.min_col)
+                top_left.value = patient_id
+                break
+    else:
+        cell.value = patient_id
+
+    # === 2. Tratamiento de Radioterapia externa ===
+    # C12: "Dosis total"
+    # C13: "Fracciones"
+    # C14: "CTV 95% [Gy]"
+    # I13–I16: Dosis (Gy) por órgano (Recto, Vejiga, Sigmoide, Intestino)
+
+     # Fracciones RT externa (número entero)
+    ws["C13"] = fx_rt
+    ws["C13"].alignment = center_align
+
+    # CTV de RT externa (desde TABLA 1: RT Externa (Gy))
+    ctv_row = ebrt_map.get("CTV")
+    # === Dosis total RT externa = número de fracciones × 2 Gy ===
+    ws["C12"] = round(fx_rt * 2, 2)
+    ws["C12"].alignment = center_align
+    
+    if ctv_row:
+      dose_ctv = r2(ctv_row.get("D_ext"))
+      ws["C14"] = dose_ctv      # CTV 95% [Gy]
+      ws["C14"].alignment = center_align
+
+
+    # Órganos en la tabla derecha
+   
+    oar_rows = [
+        ("RECTO",    13),
+        ("VEJIGA",   14),
+        ("SIGMOIDE", 15),
+        ("INTESTINO",16),
+    ]
+    for roi_key, row_idx in oar_rows:
+        row = ebrt_map.get(roi_key)
+        if row:
+            cell_oar = ws.cell(row=row_idx, column=9)
+            cell_oar.value = r2(row.get("D_ext"))  # I = col 9
+            cell_oar.alignment = center_align
+
+    # === 3. Completar Tabla de Tratamiento HDR (EQD2 por sesión) ===
+
+    # Estas filas deben coincidir con tu plantilla EXACTA.
+    # Ajustalas si fuera necesario.
+    row_map_hdr = {
+      "CTV": 24,        # fila donde está "CTV D90%"
+      "Recto": 25,
+      "Vejiga": 26,
+      "Sigmoide": 27,
+      "Intestino": 28,
+    }
+
+    # Columna donde empiezan "Sesión 1", "Sesión 2", etc.
+    # Por ejemplo si Sesión 1 está en la columna C → column=3
+    col_start = 3   # AJUSTAR si tu plantilla difiere
+
+    # Procesar HDR fracción por fracción (EQD2 1, EQD2 2…)
+    hdr_map = { (x["roi"] or "").upper(): x for x in hdr_fractions }
+
+    def match_roi(roi_excel):
+        roi_excel = roi_excel.upper()
+        for roi_hdr, data in hdr_map.items():
+            if roi_excel == "CTV" and "CTV" in roi_hdr:
+                return data
+            if roi_excel != "CTV" and roi_excel in roi_hdr:
+                return data
+        return None
+
+    # columnas reales de Sesión 1..4 en tu plantilla: C, D, F, H
+    session_cols = [3, 4, 6, 8]  # C, D, F, H
+
+    for roi_excel, row_idx in row_map_hdr.items():
+      item = match_roi(roi_excel)
+      eqd2s = [r2(v) for v in item["eqd2s"]] if item else []
+
+      for j in range(4):  # Sesión 1..4
+        col = session_cols[j]      # ← en vez de col_start + j
+        cell = ws.cell(row=row_idx, column=col)
+
+        # Si cae en una celda combinada, redirigimos a la tope-izquierda
+        if isinstance(cell, MergedCell):
+            for merged_range in ws.merged_cells.ranges:
+                if cell.coordinate in merged_range:
+                    cell = ws.cell(
+                        row=merged_range.min_row,
+                        column=merged_range.min_col
+                    )
+                    break
+
+        # j = 0 → EQD2 1, j = 1 → EQD2 2, j = 2 → EQD2 3, j = 3 → EQD2 4
+        if j < len(eqd2s) and eqd2s[j] is not None:
+            cell.value = eqd2s[j]
+        else:
+            cell.value = "-"   # guion cuando no existe sesión
+
+        cell.alignment = center_align
+
+
+    
+
+    # === 4. Registro de dosis total (EQD2) ===
+    # Fila 35: CTV
+    # Fila 36: Recto
+    # Fila 37: Vejiga
+    # Fila 38: Sigma
+    # Fila 39: Intestino
+    row_map = {
+        "CTV": 35,
+        "RECTO": 36,
+        "VEJIGA": 37,
+        "SIGMOIDE": 38,
+        "INTESTINO": 39,
+    }
+
+    for item in summary:
+        roi_raw = (item.get("roi") or "").upper()
+        roi_key = roi_raw.replace(" (D90)", "")
+        row_idx = row_map.get(roi_key)
+        if not row_idx:
+            continue
+
+        c_ebrt = ws.cell(row=row_idx, column=3)
+        c_ebrt.value = r2(item.get("eqd2_ebrt"))
+        c_ebrt.alignment = center_align
+
+        c_hdr = ws.cell(row=row_idx, column=4)
+        c_hdr.value = r2(item.get("eqd2_hdr"))
+        c_hdr.alignment = center_align
+
+        c_sum = ws.cell(row=row_idx, column=7)
+        c_sum.value = r2(item.get("eqd2_total"))   # EQD2 TOTAL de la tabla 3
+
+
+    # 5) Guardar a un xlsx temporal y convertirlo a PDF con Excel
+    with tempfile.TemporaryDirectory() as tmpdir:
+        xlsx_path = os.path.join(tmpdir, "carton_temp.xlsx")
+        wb.save(xlsx_path)
+
+        pdf_bytes = None
+        pythoncom.CoInitialize()
+        try:
+            excel = win32.gencache.EnsureDispatch("Excel.Application")
+            excel.Visible = False
+            try:
+                wb_excel = excel.Workbooks.Open(xlsx_path)
+                pdf_path = os.path.join(tmpdir, "carton_temp.pdf")
+                # 0 = PDF
+                wb_excel.ExportAsFixedFormat(0, pdf_path)
+                wb_excel.Close(False)
+            finally:
+                excel.Quit()
+
+            if not os.path.exists(pdf_path):
+                return "No se generó el PDF", 500
+
+            with open(pdf_path, "rb") as f:
+                pdf_bytes = f.read()
+        finally:
+            pythoncom.CoUninitialize()
+
+    filename = f"Carton_{(patient_id or patient_name or 'paciente').replace(' ', '_')}.pdf"
+    return send_file(
+        io.BytesIO(pdf_bytes),
+        as_attachment=True,
+        download_name=filename,
+        mimetype="application/pdf",
     )
+
+    filename = f"Carton_{(patient_id or patient_name or 'paciente').replace(' ', '_')}.pdf"
+    return send_file(
+        io.BytesIO(pdf_bytes),
+        as_attachment=True,
+        download_name=filename,
+        mimetype="application/pdf",
+    )
+@app.route("/export_informe", methods=["POST"])
+def export_informe():
+    # 1) Recuperar data desde el hidden (mismo mecanismo que cartón)
+    payload = request.form.get("payload", "")
+    if not payload:
+        return "Sin datos para exportar", 400
+
+    try:
+        data = json.loads(payload)
+    except Exception:
+        return "Payload inválido", 400
+
+    patient_name = data.get("patient_name") or ""
+    patient_id   = data.get("patient_id") or ""
+    summary      = data.get("summary") or []
+
+    # 2) Abrir plantilla del informe médico
+    template_path = os.path.join(
+        os.path.dirname(__file__),
+        "Plantilla informe medico.xlsx"   # 👈 mismo nombre que tu archivo
+    )
+    if not os.path.exists(template_path):
+        return f"No se encontró la plantilla en {template_path}", 500
+
+    wb = load_workbook(template_path)
+    ws = wb.active  # o wb["NombreDeHoja"] si tiene nombre fijo
+
+    # 3) Completar fecha (G7) y nombre de paciente (G12)
+    ws["G7"]  = datetime.today().strftime("%d/%m/%Y")
+    ws["G12"] = patient_name
+
+    # 4) Completar tabla de abajo: CTV, Recto, Vejiga, Sigmoide, Intestino
+    #    Columnas asumidas según tu captura:
+    #    D = EQD2 RT externa, F = EQD2 HDR, H = EQD2 TOTAL
+    row_map = {
+        "CTV":       32,
+        "RECTO":     33,
+        "VEJIGA":    34,
+        "SIGMOIDE":  35,
+        "INTESTINO": 36,
+    }
+
+    def _sf(x):
+        try:
+            if x is None:
+                return None
+            return float(x)
+        except Exception:
+            return None
+
+    for item in summary:
+        roi_raw = (item.get("roi") or "").upper()
+        # En summary CTV viene como "CTV" o "CTV (D90)"
+        roi_key = roi_raw.replace(" (D90)", "")
+        row = row_map.get(roi_key)
+        if not row:
+            continue
+
+        ws[f"D{row}"] = _sf(item.get("eqd2_ebrt"))   # EQD2 RT externa
+        ws[f"F{row}"] = _sf(item.get("eqd2_hdr"))    # EQD2 HDR
+        ws[f"H{row}"] = _sf(item.get("eqd2_total"))  # EQD2 TOTAL
+
+    # 5) Guardar en memoria y devolver como XLSX editable
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+
+    filename = f"Informe_final_{(patient_id or patient_name or 'paciente').replace(' ', '_')}.xlsx"
+
+    return send_file(
+        output,
+        as_attachment=True,
+        download_name=filename,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
 if __name__ == "__main__":
     print(">> Booting Flask on http://127.0.0.1:5000  (use_reloader=False)")
     try:
