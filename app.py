@@ -4,9 +4,13 @@ from openpyxl import load_workbook
 from openpyxl.cell.cell import MergedCell
 from openpyxl.styles import Alignment
 from openpyxl.styles import Font
+from openpyxl.drawing.image import Image as XLImage
 import win32com.client as win32
 import pythoncom
 from datetime import datetime 
+import fitz
+from PIL import Image
+
 
 
 
@@ -477,81 +481,87 @@ Por último, elegir el número de planes y subir un archivo por sesión. El cál
 {% endif %}
 
 {% if plan_real %}
-  <div class= "section">
-<h3>Resumen dosimétrico del tratamiento completo (Radioterapia externa + HDR)</h3>
-{% if patient_name or patient_id %}
-  <p class="patient-info">
-    <b>Paciente:</b> {{ patient_name or "—" }} &nbsp;&nbsp; <b>ID:</b> {{ patient_id or "—" }}
-  </p>
-{% endif %}
+  <div class="section">
+    <h3>Resumen dosimétrico del tratamiento completo (Radioterapia externa + HDR)</h3>
+    {% if patient_name or patient_id %}
+      <p class="patient-info">
+        <b>Paciente:</b> {{ patient_name or "—" }} &nbsp;&nbsp; <b>ID:</b> {{ patient_id or "—" }}
+      </p>
+    {% endif %}
 
-{# Construimos listas CTV y otros SIN usar 'contains' #}
-{% set ns = namespace(ctv=[], otros=[]) %}
-{% for it in plan_summary %}
-  {% if 'CTV' in (it.roi|string).upper() %}
-    {% set ns.ctv = ns.ctv + [it] %}
-  {% else %}
-    {% set ns.otros = ns.otros + [it] %}
-  {% endif %}
-{% endfor %}
-{% set plan_ordenado = ns.ctv + ns.otros %}
-
-<table class="table table-summary">
-  <thead>
-    <tr>
-      <th>Órgano</th>
-      <th>EQD2 RT Externa (Gy)</th>
-      <th>EQD2 HDR (Gy)</th>
-      <th>EQD2 TOTAL (Gy)</th>
-    </tr>
-  </thead>
-  <tbody>
-    {% for r in plan_ordenado %}
-      <tr>
-        <td>
-          {{ r.roi }}
-          <span class="small" style="font-weight: normal;">
-            {% if 'CTV' in (r.roi|string).upper() %}(D90){% else %}(D2cc){% endif %}
-          </span>
-        </td>
-        <td>{{ "%.2f"|format(r.eqd2_ebrt) }}</td>
-        <td>{{ "%.2f"|format(r.eqd2_hdr) }}</td>
-        <td>
-          {% if r.limit is not none %}
-            {% if r.eqd2_total > r.limit %}
-              <span class="eqd2-warn">{{ "%.2f"|format(r.eqd2_total) }}</span>
-            {% else %}
-              <span class="eqd2-ok">{{ "%.2f"|format(r.eqd2_total) }}</span>
-            {% endif %}
-          {% else %}
-            {{ "%.2f"|format(r.eqd2_total) }}
-          {% endif %}
-        </td>
-      </tr>
+    {# Construimos listas CTV y otros SIN usar 'contains' #}
+    {% set ns = namespace(ctv=[], otros=[]) %}
+    {% for it in plan_summary %}
+      {% if 'CTV' in (it.roi|string).upper() %}
+        {% set ns.ctv = ns.ctv + [it] %}
+      {% else %}
+        {% set ns.otros = ns.otros + [it] %}
+      {% endif %}
     {% endfor %}
-  </tbody>
-</table>
+    {% set plan_ordenado = ns.ctv + ns.otros %}
 
+    <table class="table table-summary">
+      <thead>
+        <tr>
+          <th>Órgano</th>
+          <th>EQD2 RT Externa (Gy)</th>
+          <th>EQD2 HDR (Gy)</th>
+          <th>EQD2 TOTAL (Gy)</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in plan_ordenado %}
+          <tr>
+            <td>
+              {{ r.roi }}
+              <span class="small" style="font-weight: normal;">
+                {% if 'CTV' in (r.roi|string).upper() %}(D90){% else %}(D2cc){% endif %}
+              </span>
+            </td>
+            <td>{{ "%.2f"|format(r.eqd2_ebrt) }}</td>
+            <td>{{ "%.2f"|format(r.eqd2_hdr) }}</td>
+            <td>
+              {% if r.limit is not none %}
+                {% if r.eqd2_total > r.limit %}
+                  <span class="eqd2-warn">{{ "%.2f"|format(r.eqd2_total) }}</span>
+                {% else %}
+                  <span class="eqd2-ok">{{ "%.2f"|format(r.eqd2_total) }}</span>
+                {% endif %}
+              {% else %}
+                {{ "%.2f"|format(r.eqd2_total) }}
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <div class="section" style="margin-top:16px">
+      <form method="post" action="/export_carton">
+        <input type="hidden" name="payload" value='{{ export_data|tojson }}'>
+        <button class="btn btn-primary" type="submit">Exportar cartón dosimétrico</button>
+      </form>
+      <p class="small">
+        Se exporta con el formato de “Cartón dosimétrico.xlsx” y los valores de la tabla de arriba.
+      </p>
+
+      <!-- 👇 NUEVO: botón para informe final editable -->
+     <form method="post" action="/export_informe" style="margin-top:10px" enctype="multipart/form-data">
+       <input type="hidden" name="payload" value='{{ export_data|tojson }}'>
+
+       <label class="small" style="display:block; margin-bottom:6px;">
+         Adjuntar plan en PDF (Oncentra / Eclipse)
+         <input class="input" type="file" name="plan_pdf" accept="application/pdf">
+       </label>
+       
+       <button class="btn btn-primary" type="submit">Exportar informe final (editable)</button>
+     </form>
+     <p class="small">Genera un informe final en Excel a partir de la plantilla “Plantilla informe medico.xlsx”.</p>
+
+    </div>
   </div>
 {% endif %}
 {% endif %} </div></div></body></html>
-{% if plan_real %}
-  <div class="section" style="margin-top:16px">
-    <form method="post" action="/export_carton">
-      <input type="hidden" name="payload" value='{{ export_data|tojson }}'>
-      <button class="btn btn-primary" type="submit">Exportar cartón dosimétrico </button>
-    </form>
-    <p class="small">Se exporta con el formato de “Cartón dosimétrico.xlsx” y los valores de la tabla de arriba.</p>
-  </div>
-{% endif %}
-    <!-- 👇 NUEVO: botón para informe final editable -->
-    <form method="post" action="/export_informe" style="margin-top:10px">
-      <input type="hidden" name="payload" value='{{ export_data|tojson }}'>
-      <button class="btn btn-primary" type="submit">Exportar informe final (editable)</button>
-    </form>
-    <p class="small">Genera un informe final en Excel a partir de la plantilla “Plantilla informe medico.xlsx”.</p>
-  </div>
-{% endif %}
 """
 
 # ====== Física ======
@@ -757,6 +767,48 @@ def parse_oncentra_session_file(file_storage):
             ctv_d90_gy = float(d90)
 
     return hdr_d2, ctv_d90_gy, patient_name,patient_id
+def pdf_to_png(pdf_bytes):
+    """Devuelve PNG bytes de la primera página de un PDF, rotada vertical."""
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    page = doc[0]
+    pix = page.get_pixmap(dpi=150)
+    png_bytes = pix.tobytes("png")
+    doc.close()
+
+    # ---- Rotar usando PIL ----
+    img = Image.open(io.BytesIO(png_bytes))
+    rotated = img.rotate(90, expand=True)  # 90° antihorario (vertical)
+    
+    out = io.BytesIO()
+    rotated.save(out, format="PNG")
+    return out.getvalue()
+
+def insert_png_into_excel(excel_bytes, png_bytes):
+    """
+    Inserta la imagen PNG en la segunda hoja del Excel (índice 1),
+    en la celda A1. Devuelve los bytes del nuevo Excel.
+    """
+    # Cargar el Excel desde memoria
+    wb = load_workbook(io.BytesIO(excel_bytes))
+
+    # Segunda hoja: índice 1 (la primera es 0)
+    ws = wb["IMAGEN"]  
+
+
+    # Crear objeto imagen de openpyxl
+    img = XLImage(io.BytesIO(png_bytes))
+
+    # Escalar un poco la imagen si hace falta
+    img.width = img.width * 0.35
+    img.height = img.height * 0.35
+
+    # Insertar en la posición B5
+    ws.add_image(img, "B5")
+
+    # Guardar de vuelta a bytes
+    out = io.BytesIO()
+    wb.save(out)
+    return out.getvalue()
 
 # ====== Rutas ======
 @app.route("/", methods=["GET"])
@@ -1484,7 +1536,7 @@ def export_informe():
         return f"No se encontró la plantilla en {template_path}", 500
 
     wb = load_workbook(template_path)
-    ws = wb.active  # o wb["NombreDeHoja"] si tiene nombre fijo
+    ws = wb.worksheets[0]  # o wb["NombreDeHoja"] si tiene nombre fijo
 
     # 3) Completar fecha (G7) y nombre de paciente (G12)
     ws["G7"]  = datetime.today().strftime("%d/%m/%Y")
@@ -1521,19 +1573,28 @@ def export_informe():
         ws[f"F{row}"] = _sf(item.get("eqd2_hdr"))    # EQD2 HDR
         ws[f"H{row}"] = _sf(item.get("eqd2_total"))  # EQD2 TOTAL
 
-    # 5) Guardar en memoria y devolver como XLSX editable
-    output = io.BytesIO()
-    wb.save(output)
-    output.seek(0)
+    # 5) Guardar Excel inicial en memoria
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    excel_bytes = buffer.getvalue()
 
+    # 6) NUEVO: si se subió un PDF, lo convierto a PNG y lo inserto en la hoja 2
+    pdf_file = request.files.get("plan_pdf")
+    if pdf_file and pdf_file.filename:
+        pdf_bytes = pdf_file.read()
+        png_bytes = pdf_to_png(pdf_bytes)
+        excel_bytes = insert_png_into_excel(excel_bytes, png_bytes)
+
+    # 7) Devolver como XLSX editable
     filename = f"Informe_final_{(patient_id or patient_name or 'paciente').replace(' ', '_')}.xlsx"
 
     return send_file(
-        output,
+        io.BytesIO(excel_bytes),
         as_attachment=True,
         download_name=filename,
         mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
+
 
 
 if __name__ == "__main__":
